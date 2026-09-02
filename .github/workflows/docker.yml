@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Pull requests from forks cannot access GITHUB_TOKEN with write scope,
       # so PRs build without pushing. Merges to main and tags publish.
