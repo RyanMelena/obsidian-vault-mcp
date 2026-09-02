@@ -323,15 +323,30 @@ def build_server(cfg: Config) -> MCPServer:
             log.warning("rejected webhook: %s", exc)
             return JSONResponse({"ok": False, "reason": str(exc)}, status_code=exc.status)
 
+        detail = {"ref": event.get("ref"), "after": event.get("after")}
+
         if not event["relevant"]:
-            return JSONResponse({"ok": True, "skipped": event["reason"]})
+            return JSONResponse({"ok": True, "skipped": event["reason"], **detail})
         if git.is_own_push(event.get("after")):
-            return JSONResponse({"ok": True, "skipped": "our own push"})
+            return JSONResponse({"ok": True, "skipped": "our own push", **detail})
+
+        # An all-zero `after` means "no commit". That is a branch deletion on a
+        # live repo, but it is also what Gitea's Test Delivery sends and what a
+        # push to a repo with no commits looks like. Ask the remote rather than
+        # trusting the payload, so a real push is never dropped as a deletion.
+        if event.get("zero_after"):
+            if await git.remote_branch_exists():
+                log.info("zero after-sha but %s still exists on the remote; syncing",
+                         cfg.git_branch)
+            else:
+                return JSONResponse(
+                    {"ok": True, "skipped": f"branch {cfg.git_branch} not on remote", **detail}
+                )
 
         task = asyncio.create_task(_pull_and_reindex())
         _background.add(task)
         task.add_done_callback(_background.discard)
-        return JSONResponse({"ok": True, "queued": event["after"]}, status_code=202)
+        return JSONResponse({"ok": True, "queued": event.get("after"), **detail}, status_code=202)
 
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(_: Request) -> JSONResponse:

@@ -174,6 +174,13 @@ class VaultGit:
             self._own_pushes.add(await self.head())
             log.info("pushed initial commit to %s/%s", self.remote, self.branch)
 
+    async def remote_branch_exists(self) -> bool:
+        """Does the tracked branch still exist on the remote?"""
+        code, out = await self._git(
+            "ls-remote", "--heads", self.remote, self.branch, check=False
+        )
+        return code == 0 and bool(out.strip())
+
     async def provision(self) -> None:
         """Bring the vault to a usable git state, or disable git and say why.
 

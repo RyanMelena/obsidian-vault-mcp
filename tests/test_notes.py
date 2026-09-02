@@ -160,8 +160,12 @@ def test_parse_push_filters() -> None:
     assert parse_push(ok, "main")["relevant"] is True
     other = json.dumps({"ref": "refs/heads/dev", "after": "abc"}).encode()
     assert parse_push(other, "main")["relevant"] is False
-    deletion = json.dumps({"ref": "refs/heads/main", "after": "0" * 40}).encode()
-    assert parse_push(deletion, "main")["relevant"] is False
+    # an all-zero after-sha is reported, not judged: the caller confirms
+    # against the remote, because Test Delivery and empty repos look the same
+    zeros = json.dumps({"ref": "refs/heads/main", "after": "0" * 40}).encode()
+    assert parse_push(zeros, "main")["zero_after"] is True
+    assert parse_push(zeros, "main")["relevant"] is True
+    assert parse_push(ok, "main")["zero_after"] is False
     assert parse_push(json.dumps({"action": "opened"}).encode(), "main")["relevant"] is False
     with pytest.raises(WebhookError):
         parse_push(b"not json", "main")

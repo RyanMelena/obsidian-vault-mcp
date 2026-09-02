@@ -35,7 +35,14 @@ def verify(secret: str, body: bytes, headers: dict[str, str]) -> None:
 
 
 def parse_push(body: bytes, branch: str) -> dict[str, Any]:
-    """Return {'relevant': bool, 'after': sha, 'reason': str} for a push payload."""
+    """Classify a push payload.
+
+    Returns `relevant`, `after`, `ref`, `reason`, and `zero_after`. An all-zero
+    `after` is reported, not judged: it means "no commit", which is a branch
+    deletion on a live repo but also what Gitea's Test Delivery button sends and
+    what a push to a repo with no commits looks like. The caller confirms
+    against the remote before deciding.
+    """
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -45,11 +52,16 @@ def parse_push(body: bytes, branch: str) -> dict[str, Any]:
 
     ref = payload.get("ref")
     after = payload.get("after")
+    zero_after = isinstance(after, str) and after != "" and set(after) == {"0"}
+    base = {"after": after, "ref": ref, "zero_after": zero_after}
+
     if ref is None:
         # Not a push event (issue comment, release, ...). Harmless; ignore.
-        return {"relevant": False, "after": after, "reason": "not a push event"}
+        return {**base, "relevant": False, "reason": "not a push event"}
     if ref != f"refs/heads/{branch}":
-        return {"relevant": False, "after": after, "reason": f"ref {ref} is not the tracked branch"}
-    if isinstance(after, str) and set(after) == {"0"}:
-        return {"relevant": False, "after": after, "reason": "branch deletion"}
-    return {"relevant": True, "after": after, "reason": "push to tracked branch"}
+        return {
+            **base,
+            "relevant": False,
+            "reason": f"ref {ref} is not the tracked branch (refs/heads/{branch})",
+        }
+    return {**base, "relevant": True, "reason": "push to tracked branch"}

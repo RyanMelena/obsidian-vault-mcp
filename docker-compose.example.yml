@@ -35,6 +35,13 @@ services:
       timeout: 5s
       start_period: 120s
     networks: [proxy]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.obsidian-vault.rule=Host(`obsidian-vault.internal.example.com`)
+      - traefik.http.routers.obsidian-vault.entrypoints=websecure
+      - traefik.http.routers.obsidian-vault.tls.certresolver=route53
+      - traefik.http.services.obsidian-vault.loadbalancer.server.port=3940
 
 secrets:
   gitea_token:
@@ -44,4 +51,5 @@ volumes:
   vault-state:
 
 networks:
-  proxy: {}
+  proxy:
+    external: true
