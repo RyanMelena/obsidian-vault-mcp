@@ -6,7 +6,7 @@ services:
   obsidian-vault:
     # Published by .github/workflows/docker.yml. Pin a version tag in
     # production; :latest tracks main.
-    image: ghcr.io/RyanMelena/obsidian-vault-mcp:latest
+    image: ghcr.io/ryanmelena/obsidian-vault-mcp:latest
     # Defaults to 3000:3000. Set this to whatever owns the vault dataset —
     # the image works under any uid:gid. If you use a bind mount for /state
     # instead of the named volume below, chown it to match.
@@ -15,8 +15,9 @@ services:
     env_file: .env
     volumes:
       - /mnt/perfpool/obsidian/vault:/vault
-      # Deploy key with write access to the Gitea repo.
-      - /mnt/perfpool/docker/stacks/obsidian/ssh:/home/app/.ssh:ro
+      # SSH deploy key — only needed for an ssh:// remote. With GIT_TOKEN or
+      # GIT_TOKEN_FILE set for an HTTP(S) remote, drop this mount entirely.
+      # - /mnt/perfpool/docker/stacks/obsidian/ssh:/home/app/.ssh:ro
       # Writable state: reranker ONNX weights (~570 MB), caches, gitconfig,
       # and the synthesized passwd file. A named volume inherits the image's
       # 0777 mode, so it works whatever uid you run as.

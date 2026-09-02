@@ -61,9 +61,76 @@ export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$STATE_DIR/gitconfig}"
 git config --global --add safe.directory "$VAULT_PATH"
 git config --global --add safe.directory '*'
 
-# $HOME must exist for ssh to find ~/.ssh; warn rather than fail, since a
-# vault synced over an HTTPS remote does not need it.
-if [ -n "${HOME:-}" ] && [ ! -d "$HOME" ]; then
+# ---- 3. HTTP(S) credentials -----------------------------------------------
+#
+# Gitea accepts an access token as the HTTP password with any username. The
+# token goes in a 0600 credential file under $STATE_DIR rather than in the
+# remote URL, so it stays out of .git/config, `git remote -v`, and the process
+# list. GIT_TOKEN_FILE lets you feed it from a Docker/Compose secret instead of
+# an environment variable.
+
+if [ -n "${GIT_TOKEN_FILE:-}" ]; then
+    if [ -r "$GIT_TOKEN_FILE" ]; then
+        GIT_TOKEN="$(cat "$GIT_TOKEN_FILE")"
+    else
+        echo "entrypoint: GIT_TOKEN_FILE=$GIT_TOKEN_FILE is not readable." >&2
+        exit 1
+    fi
+fi
+
+if [ -n "${GIT_TOKEN:-}" ]; then
+    remote_url="${GIT_REMOTE_URL:-}"
+    if [ -z "$remote_url" ]; then
+        remote_url="$(git -C "$VAULT_PATH" remote get-url "${GIT_REMOTE:-origin}" 2>/dev/null || true)"
+    fi
+    if [ -z "$remote_url" ]; then
+        echo "entrypoint: GIT_TOKEN is set but no remote is known." >&2
+        echo "entrypoint: set GIT_REMOTE_URL, or add the remote to the vault repo." >&2
+        exit 1
+    fi
+
+    cred_file="$STATE_DIR/git-credentials"
+    # Percent-encode both fields: tokens are usually URL-safe, usernames
+    # containing '@' or ':' are not, and a raw one silently corrupts the entry.
+    cred_line="$(
+        REMOTE="$remote_url" \
+        CRED_USER="${GIT_USERNAME:-oauth2}" \
+        CRED_TOKEN="$GIT_TOKEN" \
+        python3 -c '
+import os, sys, urllib.parse as u
+p = u.urlsplit(os.environ["REMOTE"])
+if p.scheme not in ("http", "https"):
+    sys.exit("entrypoint: GIT_TOKEN only applies to http(s) remotes, got " + p.scheme)
+host = p.hostname or ""
+if p.port:
+    host += ":%d" % p.port
+user = u.quote(os.environ["CRED_USER"], safe="")
+tok = u.quote(os.environ["CRED_TOKEN"], safe="")
+print("%s://%s:%s@%s" % (p.scheme, user, tok, host))
+'
+    )"
+
+    ( umask 077; printf '%s\n' "$cred_line" > "$cred_file" )
+    chmod 0600 "$cred_file"
+    git config --global credential.helper "store --file=$cred_file"
+    # Match on host, not on the full repo path, so one entry covers the repo
+    # and any future ones on the same Gitea instance.
+    git config --global credential.useHttpPath false
+fi
+
+# Point the vault at GIT_REMOTE_URL when given, so the URL lives in compose
+# rather than baked into the repo on disk.
+if [ -n "${GIT_REMOTE_URL:-}" ] && git -C "$VAULT_PATH" rev-parse --git-dir >/dev/null 2>&1; then
+    if git -C "$VAULT_PATH" remote get-url "${GIT_REMOTE:-origin}" >/dev/null 2>&1; then
+        git -C "$VAULT_PATH" remote set-url "${GIT_REMOTE:-origin}" "$GIT_REMOTE_URL"
+    else
+        git -C "$VAULT_PATH" remote add "${GIT_REMOTE:-origin}" "$GIT_REMOTE_URL"
+    fi
+fi
+
+# $HOME must exist for ssh to find ~/.ssh; warn rather than fail, since an
+# HTTPS remote does not need it.
+if [ -n "${HOME:-}" ] && [ ! -d "$HOME" ] && [ -z "${GIT_TOKEN:-}" ]; then
     echo "entrypoint: HOME=$HOME does not exist; SSH remotes will not work." >&2
 fi
 
