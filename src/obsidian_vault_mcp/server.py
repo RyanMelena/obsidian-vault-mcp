@@ -26,7 +26,7 @@ from .notes import (
     atomic_write,
     build_note,
     render,
-    resolve_within,
+    resolve_writable,
     slugify,
     split_frontmatter,
     unique_path,
@@ -192,14 +192,17 @@ def build_server(cfg: Config) -> MCPServer:
         body: str | None = None,
         frontmatter: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Revise an existing note in the AI inbox.
+        """Revise an existing note.
 
-        `path` is vault-relative. Supply `body` to replace the note body, and/or
-        `frontmatter` to merge keys into the existing frontmatter (a null value
-        removes a key). Notes outside the inbox are not writable.
+        `path` is vault-relative, e.g. "Networking/VLANs/Home VLANs.md". Supply
+        `body` to replace the note body, and/or `frontmatter` to merge keys into
+        the existing frontmatter (a null value removes a key); `id` and
+        `created` are immutable. Writes are confined to the server's configured
+        scope, and never touch .git, .obsidian, .ai-tmp, or .trash. Call
+        read_notes first if you intend to preserve any of the existing body.
         """
         with _actionable("update_note"):
-            target = resolve_within(cfg.inbox_root, path.split(f"{cfg.inbox_dir}/", 1)[-1])
+            target = resolve_writable(cfg.vault_path, cfg.writable_paths, path)
             if not target.is_file():
                 raise NoteError(f"no such note: {path}")
 
@@ -238,6 +241,7 @@ def build_server(cfg: Config) -> MCPServer:
             "vault": str(cfg.vault_path),
             "inbox": cfg.inbox_dir,
             "inbox_notes": len(inbox),
+            "writable_paths": list(cfg.writable_paths),
             "git_enabled": cfg.git_enabled,
         }
         if git.disabled_reason:

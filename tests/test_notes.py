@@ -306,3 +306,56 @@ async def test_provision_corrects_a_stale_remote_url(tmp_path: Path) -> None:
         capture_output=True, text=True,
     ).stdout.strip()
     assert url == str(remote)
+
+
+# ---- writable scope ----------------------------------------------------
+
+def _vault(tmp_path: Path) -> Path:
+    from obsidian_vault_mcp.notes import DENIED_COMPONENTS
+
+    for d in ["ai-inbox", "Networking/VLANs", *DENIED_COMPONENTS]:
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Networking/VLANs/Home VLANs.md").write_text("x")
+    (tmp_path / ".obsidian/plugins").mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+def test_writable_scope_defaults_to_inbox(tmp_path: Path) -> None:
+    from obsidian_vault_mcp.notes import resolve_writable
+
+    v = _vault(tmp_path)
+    assert resolve_writable(v, ["ai-inbox"], "ai-inbox/n.md")
+    with pytest.raises(NoteError, match="outside the writable scope"):
+        resolve_writable(v, ["ai-inbox"], "Networking/VLANs/Home VLANs.md")
+
+
+def test_writable_scope_can_be_widened(tmp_path: Path) -> None:
+    from obsidian_vault_mcp.notes import resolve_writable
+
+    v = _vault(tmp_path)
+    got = resolve_writable(v, ["ai-inbox", "Networking"], "Networking/VLANs/Home VLANs.md")
+    assert got == (v / "Networking/VLANs/Home VLANs.md").resolve()
+    assert resolve_writable(v, ["."], "Networking/VLANs/Home VLANs.md")
+
+
+@pytest.mark.parametrize(
+    "protected",
+    [".git/config", ".obsidian/plugins/x.js", ".ai-tmp/y.md", ".trash/z.md",
+     "Networking/../.obsidian/app.json"],
+)
+def test_protected_dirs_refused_even_with_whole_vault_scope(
+    tmp_path: Path, protected: str
+) -> None:
+    from obsidian_vault_mcp.notes import resolve_writable
+
+    v = _vault(tmp_path)
+    with pytest.raises(NoteError, match="protected directory"):
+        resolve_writable(v, ["."], protected)
+
+
+@pytest.mark.parametrize("evil", ["../outside.md", "/etc/passwd", "a\x00b.md"])
+def test_writable_scope_still_refuses_escapes(tmp_path: Path, evil: str) -> None:
+    from obsidian_vault_mcp.notes import resolve_writable
+
+    with pytest.raises(NoteError):
+        resolve_writable(_vault(tmp_path), ["."], evil)

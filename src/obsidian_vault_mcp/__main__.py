@@ -12,6 +12,14 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # Per-request chatter from the SDK and the HTTP client: one
+    # "Terminating session: None" per tool call (stateless_http assigns no
+    # session id) and one request line per search backend call. Useful when
+    # debugging the transport, noise the rest of the time.
+    if os.environ.get("LOG_LEVEL", "INFO").upper() != "DEBUG":
+        for noisy in ("mcp.server.streamable_http", "httpx", "httpx2"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
     cfg = Config.from_env()
     logging.getLogger("obsidian-vault-mcp").info(
         "vault=%s inbox=%s git=%s listening on %s:%s%s",

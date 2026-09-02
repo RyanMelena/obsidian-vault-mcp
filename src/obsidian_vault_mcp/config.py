@@ -25,6 +25,9 @@ def _req(name: str) -> str:
 class Config:
     vault_path: Path
     inbox_dir: str = "ai-inbox"
+    # Vault-relative folders update_note may write to. "." means the whole
+    # vault. New notes from save_note always land in inbox_dir.
+    writable_paths: tuple[str, ...] = ("ai-inbox",)
     tmp_dir: str = ".ai-tmp"
 
     host: str = "0.0.0.0"
@@ -82,7 +85,13 @@ class Config:
             )
         return cls(
             vault_path=vault,
-            inbox_dir=os.environ.get("INBOX_DIR", "ai-inbox"),
+            inbox_dir=(inbox := os.environ.get("INBOX_DIR", "ai-inbox")),
+            writable_paths=tuple(
+                p.strip()
+                for p in os.environ.get("WRITABLE_PATHS", inbox).split(",")
+                if p.strip()
+            )
+            or (inbox,),
             tmp_dir=os.environ.get("TMP_DIR", ".ai-tmp"),
             host=os.environ.get("HTTP_HOST", "0.0.0.0"),
             port=int(os.environ.get("HTTP_PORT", "3940")),

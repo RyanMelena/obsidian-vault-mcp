@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import unicodedata
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,44 @@ def slugify(title: str, max_len: int = 60) -> str:
     slug = _SLUG_SPACE.sub("-", norm).strip("-").lower()
     slug = slug[:max_len].rstrip("-")
     return slug or "note"
+
+
+# Never writable, wherever they appear in the path. Corrupting these breaks the
+# vault, the repo, or the index in ways a note edit should never be able to.
+DENIED_COMPONENTS = frozenset({".git", ".obsidian", ".ai-tmp", ".trash"})
+
+
+def resolve_writable(vault: Path, allowed: Sequence[str], relative: str) -> Path:
+    """Resolve a vault-relative path, refusing anything outside the writable scope.
+
+    `allowed` is a list of vault-relative folders; an entry of "." means the
+    whole vault. DENIED_COMPONENTS are refused regardless of scope.
+    """
+    if "\x00" in relative:
+        raise NoteError("path contains a NUL byte")
+    candidate = Path(relative)
+    if candidate.is_absolute():
+        raise NoteError("path must be vault-relative")
+
+    vault = vault.resolve()
+    target = (vault / candidate).resolve()
+    if target == vault or vault not in target.parents:
+        raise NoteError(f"path escapes the vault: {relative!r}")
+
+    parts = target.relative_to(vault).parts
+    if DENIED_COMPONENTS.intersection(parts):
+        raise NoteError(f"path is in a protected directory: {relative!r}")
+
+    if any(root in (".", "", "/") for root in allowed):
+        return target
+    for root in allowed:
+        scope = (vault / root).resolve()
+        if target == scope or scope in target.parents:
+            return target
+    raise NoteError(
+        f"{relative!r} is outside the writable scope ({', '.join(allowed)}). "
+        "Set WRITABLE_PATHS to widen it."
+    )
 
 
 def resolve_within(root: Path, relative: str) -> Path:

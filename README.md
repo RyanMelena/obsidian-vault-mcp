@@ -45,6 +45,26 @@ trigger is dropped instead of looping.
 | `sync_vault` | Pull from the remote immediately. Rarely needed — the webhook handles this. |
 | `vault_status` | Vault path, branch, HEAD, inbox note count. |
 
+## Writable scope
+
+`save_note` always writes into `INBOX_DIR`. `update_note` is bounded by
+`WRITABLE_PATHS`, which defaults to that same inbox — so out of the box an
+agent can revise notes it wrote and nothing else.
+
+Widen it when you want agents maintaining curated notes as well:
+
+```
+WRITABLE_PATHS=ai-inbox,Networking,Projects
+```
+
+`.` means the whole vault. Whatever the scope, `.git`, `.obsidian`, `.ai-tmp`,
+and `.trash` are always refused — a note edit should never be able to reach
+your plugin config or your repo internals, and that rule does not have an
+override.
+
+Note that `update_note` replaces the body wholesale; it is not a patch. An
+agent revising a note it did not write should `read_notes` first.
+
 ## Swapping the search backend
 
 `SearchBackend` in `backends.py` is the seam: a five-method protocol
@@ -72,6 +92,10 @@ a vault the container cannot write to — are raised as `ToolError`, so the
 message reaches the agent verbatim instead of the SDK's generic
 "Error executing tool <name>". Anything unexpected still logs a full traceback
 in the container; `docker logs` is the place to look when a message is generic.
+
+Per-request transport chatter from the SDK ("Terminating session: None", one
+per tool call, since stateless mode assigns no session id) and the HTTP client
+is suppressed at `LOG_LEVEL=INFO`. Set `LOG_LEVEL=DEBUG` to see it.
 
 When provisioning cannot produce a usable repo, git is disabled with the reason
 recorded rather than left to explode on the first write. `vault_status` reports
@@ -174,9 +198,17 @@ Repo → Settings → Webhooks → Gitea:
 - **Trigger**: Push events only
 
 Gitea's delivery log is your debugging surface — it shows the request, response
-body, and status. A 202 means the pull was queued; 401 means the secret doesn't
-match; 200 with `skipped` means the push was to another branch or was this
-service's own push coming back around.
+body, and status. Every response echoes the `ref` and `after` it saw, so the log
+explains itself:
+
+- **202** with `queued` — the pull was scheduled.
+- **401** — the secret doesn't match.
+- **200** with `skipped` — another branch, this service's own push coming back
+  around, or a branch that no longer exists on the remote.
+
+An all-zero `after` is not treated as a branch deletion on its own. Gitea's Test
+Delivery button and a push to a repo with no commits both produce one, so the
+server checks `ls-remote` and syncs anyway when the branch is still there.
 
 `scripts/gitea-post-receive.sh` is a fallback if the Gitea container can't reach
 the service over HTTP. Prefer the webhook.
