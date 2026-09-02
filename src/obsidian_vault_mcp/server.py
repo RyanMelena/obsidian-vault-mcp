@@ -25,10 +25,12 @@ from .notes import (
     NoteError,
     atomic_write,
     build_note,
+    diagnose_path,
     render,
     resolve_writable,
     slugify,
     split_frontmatter,
+    suggest_paths,
     unique_path,
     utcnow,
 )
@@ -157,13 +159,17 @@ def build_server(cfg: Config) -> MCPServer:
         tags: list[str] | None = None,
         source: str | None = None,
         frontmatter: dict[str, Any] | None = None,
+        path: str | None = None,
     ) -> dict[str, Any]:
-        """Write a new markdown note into the vault's AI inbox.
+        """Write a new markdown note into the vault.
 
-        The server assigns the id, filename, and creation timestamp; supply the
-        title, the markdown body, and optionally tags, a source description, and
-        extra frontmatter fields. Returns the vault-relative path so the note can
-        be cited or read back.
+        By default the note lands in the AI inbox with a server-assigned
+        filename. Pass `path` (vault-relative, e.g.
+        "Networking/VLANs/Home VLANs.md") to file it somewhere specific within
+        the writable scope; missing folders are created. The path must not
+        already exist — use update_note to revise an existing note. The server
+        always assigns the id and creation timestamp. Returns the
+        vault-relative path so the note can be cited or read back.
         """
         note_id = ulid()
         content = build_note(
@@ -178,8 +184,18 @@ def build_server(cfg: Config) -> MCPServer:
             reserved=cfg.reserved_frontmatter,
         )
         with _actionable("save_note"):
-            cfg.inbox_root.mkdir(parents=True, exist_ok=True)
-            dest = unique_path(cfg.inbox_root, slugify(title), note_id)
+            if path:
+                dest = resolve_writable(cfg.vault_path, cfg.writable_paths, path)
+                if dest.suffix != ".md":
+                    raise NoteError(f"path must end in .md: {path!r}")
+                if dest.exists():
+                    raise NoteError(
+                        f"{path} already exists; use update_note to revise it."
+                    )
+                dest.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                cfg.inbox_root.mkdir(parents=True, exist_ok=True)
+                dest = unique_path(cfg.inbox_root, slugify(title), note_id)
             rel = dest.relative_to(cfg.vault_path).as_posix()
             atomic_write(dest, content, cfg.tmp_root)
 
@@ -203,8 +219,17 @@ def build_server(cfg: Config) -> MCPServer:
         """
         with _actionable("update_note"):
             target = resolve_writable(cfg.vault_path, cfg.writable_paths, path)
+            problem = diagnose_path(cfg.vault_path, target)
+            if problem:
+                raise NoteError(f"cannot update {path}: {problem}")
             if not target.is_file():
-                raise NoteError(f"no such note: {path}")
+                near = suggest_paths(cfg.vault_path, cfg.writable_paths, path)
+                hint = (
+                    f" Did you mean: {', '.join(near)}?"
+                    if near
+                    else " Use save_note with this path to create it."
+                )
+                raise NoteError(f"no such note: {path}.{hint}")
 
             meta, current_body = split_frontmatter(target.read_text(encoding="utf-8"))
             for key, value in (frontmatter or {}).items():

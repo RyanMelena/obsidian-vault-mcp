@@ -359,3 +359,53 @@ def test_writable_scope_still_refuses_escapes(tmp_path: Path, evil: str) -> None
 
     with pytest.raises(NoteError):
         resolve_writable(_vault(tmp_path), ["."], evil)
+
+
+# ---- suggestions on a path miss ----------------------------------------
+
+def test_suggest_paths_matches_a_wrong_folder(tmp_path: Path) -> None:
+    from obsidian_vault_mcp.notes import suggest_paths
+
+    (tmp_path / "Networking/VLAN").mkdir(parents=True)
+    (tmp_path / "Networking/VLAN/Home VLANs.md").write_text("x")
+    got = suggest_paths(tmp_path, ["."], "Networking/VLANs/Home VLANs.md")
+    assert got == ["Networking/VLAN/Home VLANs.md"]
+
+
+def test_suggest_paths_skips_protected_and_returns_empty_on_no_match(
+    tmp_path: Path,
+) -> None:
+    from obsidian_vault_mcp.notes import suggest_paths
+
+    (tmp_path / ".obsidian").mkdir()
+    (tmp_path / ".obsidian/Thing.md").write_text("x")
+    assert suggest_paths(tmp_path, ["."], "Totally/Absent/Thing.md") == []
+
+
+def test_suggest_paths_reveals_invisible_unicode_differences(tmp_path: Path) -> None:
+    from obsidian_vault_mcp.notes import suggest_paths
+
+    (tmp_path / "Networking/VLANs").mkdir(parents=True)
+    # non-breaking space — visually identical to the ASCII space the agent sent
+    (tmp_path / "Networking/VLANs/Home\u00a0VLANs.md").write_text("x")
+    got = suggest_paths(tmp_path, ["."], "Networking/VLANs/Home VLANs.md")
+    assert len(got) == 1
+    assert "differs only in unicode" in got[0]
+    assert "u00a0" in got[0]
+
+
+def test_suggest_paths_reveals_nfd_filenames(tmp_path: Path) -> None:
+    from obsidian_vault_mcp.notes import suggest_paths
+
+    (tmp_path / "Cafe\u0301.md").write_text("y")  # NFD, as macOS writes it
+    got = suggest_paths(tmp_path, ["."], "Caf\u00e9.md")
+    assert got and "differs only in unicode" in got[0]
+
+
+def test_diagnose_path_names_a_missing_directory(tmp_path: Path) -> None:
+    from obsidian_vault_mcp.notes import diagnose_path
+
+    (tmp_path / "Open").mkdir()
+    assert diagnose_path(tmp_path, tmp_path / "Open" / "nope.md") is None
+    problem = diagnose_path(tmp_path, tmp_path / "Absent" / "deep" / "nope.md")
+    assert problem is not None and "directory does not exist: Absent" in problem

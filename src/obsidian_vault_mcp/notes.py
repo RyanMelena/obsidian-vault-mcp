@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat as stat_module
 import tempfile
 import unicodedata
 from collections.abc import Sequence
@@ -71,6 +72,100 @@ def resolve_writable(vault: Path, allowed: Sequence[str], relative: str) -> Path
         f"{relative!r} is outside the writable scope ({', '.join(allowed)}). "
         "Set WRITABLE_PATHS to widen it."
     )
+
+
+def diagnose_path(vault: Path, target: Path) -> str | None:
+    """Explain precisely why `target` is not a readable, writable note.
+
+    `Path.is_file()` returns False for "does not exist" and for "a parent
+    directory is not traversable by this uid" alike, so a permissions problem
+    reads as a missing file and sends you hunting for a path that is right
+    there. Walk the chain and name the component that actually failed.
+    """
+    vault = vault.resolve()
+    parts = target.relative_to(vault).parts
+    current = vault
+    for i, part in enumerate(parts):
+        current = current / part
+        last = i == len(parts) - 1
+        try:
+            st = os.stat(current)
+        except FileNotFoundError:
+            return None if last else f"directory does not exist: {_rel(vault, current)}"
+        except PermissionError:
+            return (
+                f"permission denied on {_rel(vault, current)} — the uid this "
+                "container runs as cannot traverse it. Check ownership of the "
+                "vault against the `user:` setting."
+            )
+        if last:
+            if not stat_module.S_ISREG(st.st_mode):
+                return f"{_rel(vault, current)} is not a regular file"
+            if not os.access(current, os.R_OK):
+                return f"permission denied reading {_rel(vault, current)}"
+            if not os.access(current.parent, os.W_OK | os.X_OK):
+                return (
+                    f"permission denied writing in {_rel(vault, current.parent)} — "
+                    "the note exists but cannot be replaced by this uid."
+                )
+        elif not os.access(current, os.X_OK):
+            return (
+                f"permission denied entering {_rel(vault, current)} — the uid this "
+                "container runs as cannot traverse it."
+            )
+    return None
+
+
+def _rel(vault: Path, path: Path) -> str:
+    return path.relative_to(vault).as_posix()
+
+
+def suggest_paths(vault: Path, allowed: Sequence[str], wanted: str, limit: int = 5) -> list[str]:
+    """Nearest existing notes to a path that missed, for the error message.
+
+    A bare "no such note" leaves an agent with nowhere to go but retrying the
+    same wrong path, which is exactly what it does.
+    """
+    import difflib
+
+    roots = [vault] if any(r in (".", "", "/") for r in allowed) else [
+        (vault / r) for r in allowed
+    ]
+    candidates: list[str] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.md"):
+            if DENIED_COMPONENTS.intersection(path.parts):
+                continue
+            candidates.append(path.relative_to(vault).as_posix())
+            if len(candidates) > 5000:  # don't walk an enormous vault forever
+                break
+    # A path that looks identical but differs in Unicode is the nastiest miss:
+    # NBSP vs space, NFD vs NFC from a macOS-written filename, a curly
+    # apostrophe. It is invisible in terminal output and in the error message,
+    # so match on a folded form and then say exactly what differs.
+    folded_wanted = _fold(wanted)
+    for candidate in candidates:
+        if candidate != wanted and _fold(candidate) == folded_wanted:
+            return [f"{candidate} (differs only in unicode: {_escape(candidate)})"]
+
+    wanted_name = Path(wanted).name.lower()
+    by_name = [c for c in candidates if Path(c).name.lower() == wanted_name]
+    if by_name:
+        return by_name[:limit]
+    return difflib.get_close_matches(wanted, candidates, n=limit, cutoff=0.5)
+
+
+def _fold(text: str) -> str:
+    """Normalize away the differences that make two paths look identical."""
+    normalized = unicodedata.normalize("NFC", text)
+    return "".join(" " if ch.isspace() else ch for ch in normalized).casefold()
+
+
+def _escape(text: str) -> str:
+    """Show non-ASCII characters as escapes so the difference is visible."""
+    return "".join(ch if ch.isascii() and ch.isprintable() else f"\\u{ord(ch):04x}" for ch in text)
 
 
 def resolve_within(root: Path, relative: str) -> Path:
