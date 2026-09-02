@@ -1,0 +1,25 @@
+"""Minimal ULID: 48-bit millisecond timestamp + 80 bits of randomness,
+Crockford base32. Lexicographically sortable, no dependencies."""
+
+from __future__ import annotations
+
+import os
+import time
+
+_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _encode(value: int, length: int) -> str:
+    out = []
+    for _ in range(length):
+        value, rem = divmod(value, 32)
+        out.append(_ALPHABET[rem])
+    return "".join(reversed(out))
+
+
+def ulid(now_ms: int | None = None) -> str:
+    ts = int(time.time() * 1000) if now_ms is None else now_ms
+    if not 0 <= ts < (1 << 48):
+        raise ValueError("timestamp out of ULID range")
+    rand = int.from_bytes(os.urandom(10), "big")
+    return _encode(ts, 10) + _encode(rand, 16)
