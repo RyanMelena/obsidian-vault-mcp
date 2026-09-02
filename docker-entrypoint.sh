@@ -118,16 +118,6 @@ print("%s://%s:%s@%s" % (p.scheme, user, tok, host))
     git config --global credential.useHttpPath false
 fi
 
-# Point the vault at GIT_REMOTE_URL when given, so the URL lives in compose
-# rather than baked into the repo on disk.
-if [ -n "${GIT_REMOTE_URL:-}" ] && git -C "$VAULT_PATH" rev-parse --git-dir >/dev/null 2>&1; then
-    if git -C "$VAULT_PATH" remote get-url "${GIT_REMOTE:-origin}" >/dev/null 2>&1; then
-        git -C "$VAULT_PATH" remote set-url "${GIT_REMOTE:-origin}" "$GIT_REMOTE_URL"
-    else
-        git -C "$VAULT_PATH" remote add "${GIT_REMOTE:-origin}" "$GIT_REMOTE_URL"
-    fi
-fi
-
 # $HOME must exist for ssh to find ~/.ssh; warn rather than fail, since an
 # HTTPS remote does not need it.
 if [ -n "${HOME:-}" ] && [ ! -d "$HOME" ] && [ -z "${GIT_TOKEN:-}" ]; then

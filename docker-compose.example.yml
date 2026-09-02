@@ -1,18 +1,25 @@
 # One MCP server over one vault: search, read, and write.
 # The Python process supervises `obsidian-hybrid-search serve` on loopback,
-# so there is a single container and a single MCP endpoint to register in your agent.
+# so there is a single container, a single Traefik route, and a single
+# endpoint to register in Open WebUI.
 
 services:
   obsidian-vault:
     # Published by .github/workflows/docker.yml. Pin a version tag in
     # production; :latest tracks main.
-    image: ghcr.io/ryanmelena/obsidian-vault-mcp:latest
+    image: ghcr.io/ryanmelena/mcp-obsidian-vault:latest
+    container_name: obsidian-vault
     # Defaults to 3000:3000. Set this to whatever owns the vault dataset —
     # the image works under any uid:gid. If you use a bind mount for /state
     # instead of the named volume below, chown it to match.
     user: "3000:3000"
     restart: unless-stopped
     env_file: .env
+    # Prefer a secret over GIT_TOKEN in .env; the entrypoint reads it via
+    # GIT_TOKEN_FILE and never writes it into .git/config or the remote URL.
+    secrets: [gitea_token]
+    environment:
+      GIT_TOKEN_FILE: /run/secrets/gitea_token
     volumes:
       - /mnt/perfpool/obsidian/vault:/vault
       # SSH deploy key — only needed for an ssh:// remote. With GIT_TOKEN or
@@ -28,6 +35,10 @@ services:
       timeout: 5s
       start_period: 120s
     networks: [proxy]
+
+secrets:
+  gitea_token:
+    file: ./secrets/gitea_token
 
 volumes:
   vault-state:

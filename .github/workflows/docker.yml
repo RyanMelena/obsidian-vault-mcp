@@ -81,8 +81,11 @@ jobs:
         run: |
           IMAGE="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
           mkdir -p /tmp/vault /tmp/state
-          # Deliberately a UID that does not exist in the image, to prove the
-          # nss_wrapper path in docker-entrypoint.sh works.
+          # Run as a UID that does not exist in the image, to prove the
+          # nss_wrapper path in docker-entrypoint.sh works. The runner user is
+          # unprivileged, so widen the mode rather than chowning; leaving the
+          # dirs owned by someone else also exercises git's dubious-ownership
+          # check, which is the other half of what the entrypoint fixes.
           chmod 0777 /tmp/vault /tmp/state
           docker run -d --name smoke -p 3940:3940 \
             --user 4242:4242 \
@@ -103,8 +106,11 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
             | tee /tmp/tools.txt
           grep -q save_note /tmp/tools.txt || { docker logs smoke; exit 1; }
-          # git must work despite the unknown uid and foreign-owned tree
-          docker exec smoke sh -c 'git init -q /vault/t && git -C /vault/t status' \
+          # git must work despite the unknown uid and foreign-owned tree.
+          # Go through the entrypoint so LD_PRELOAD/NSS_WRAPPER_* are set;
+          # a bare `docker exec` skips it and would not test that path.
+          docker exec smoke /usr/local/bin/docker-entrypoint.sh \
+            sh -c 'git init -q /vault/t && git -C /vault/t status --porcelain && id' \
             || { docker logs smoke; exit 1; }
           docker rm -f smoke
 

@@ -38,6 +38,8 @@ class Config:
     git_author_name: str = "obsidian-vault-mcp"
     git_author_email: str = "vault-mcp@localhost"
     auto_push: bool = True
+    git_remote_url: str = ""
+    git_auto_init: bool = True
 
     webhook_secret: str = ""
 
@@ -92,6 +94,8 @@ class Config:
             git_author_name=os.environ.get("GIT_AUTHOR_NAME", "obsidian-vault-mcp"),
             git_author_email=os.environ.get("GIT_AUTHOR_EMAIL", "vault-mcp@localhost"),
             auto_push=_bool("AUTO_PUSH", True),
+            git_remote_url=os.environ.get("GIT_REMOTE_URL", ""),
+            git_auto_init=_bool("GIT_AUTO_INIT", True),
             webhook_secret=secret,
             reindex_cmd=os.environ.get("REINDEX_CMD", ""),
             ohs_enabled=_bool("OHS_ENABLED", True),

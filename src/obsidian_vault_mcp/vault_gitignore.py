@@ -1,0 +1,19 @@
+"""Default .gitignore written into a freshly provisioned vault."""
+
+VAULT_GITIGNORE = """\
+# obsidian-hybrid-search index — machine-local, never sync or commit
+.obsidian-hybrid-search.db
+.obsidian-hybrid-search.db-wal
+.obsidian-hybrid-search.db-shm
+
+# atomic-write staging area
+.ai-tmp/
+
+# per-machine Obsidian UI state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+
+.trash/
+.DS_Store
+"""

@@ -109,7 +109,7 @@ def test_render_preserves_frontmatter() -> None:
 # ---- filenames ---------------------------------------------------------
 
 def test_slugify() -> None:
-    assert slugify("Traefik: VLAN routing!") == "traefik-vlan-routing"
+    assert slugify("Traefik: VLAN 35 routing!") == "traefik-vlan-35-routing"
     assert slugify("///") == "note"
 
 
@@ -201,3 +201,104 @@ async def test_null_backend_refuses_cleanly() -> None:
     with pytest.raises(BackendError):
         await backend.search(query="x")
     await backend.stop()
+
+
+# ---- git provisioning --------------------------------------------------
+
+def _sh(*args: str) -> None:
+    import subprocess
+
+    subprocess.run(args, check=True, capture_output=True)
+
+
+def _bare(path: Path, populated: bool = False) -> Path:
+    _sh("git", "init", "-q", "--bare", str(path))
+    if populated:
+        seed = path.parent / f"seed-{path.stem}"
+        seed.mkdir()
+        _sh("git", "init", "-q", "-b", "main", str(seed))
+        _sh("git", "-C", str(seed), "config", "user.email", "t@t")
+        _sh("git", "-C", str(seed), "config", "user.name", "t")
+        (seed / "notes.md").write_text("existing")
+        _sh("git", "-C", str(seed), "add", "-A")
+        _sh("git", "-C", str(seed), "commit", "-qm", "seed")
+        _sh("git", "-C", str(seed), "push", "-q", str(path), "main")
+    return path
+
+
+async def _provision(vault: Path, remote: Path, **kw: object):
+    from obsidian_vault_mcp.vaultgit import VaultGit
+
+    git = VaultGit(vault, branch="main", remote_url=str(remote), **kw)  # type: ignore[arg-type]
+    await git.provision()
+    return git
+
+
+@pytest.mark.asyncio
+async def test_provision_inits_and_pushes_empty_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    remote = _bare(tmp_path / "r.git")
+    git = await _provision(vault, remote)
+    assert git.enabled
+    assert (vault / ".git").is_dir()
+    assert (vault / ".gitignore").read_text().find(".obsidian-hybrid-search.db") >= 0
+
+
+@pytest.mark.asyncio
+async def test_provision_commits_existing_notes(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "note.md").write_text("hello")
+    git = await _provision(vault, _bare(tmp_path / "r.git"))
+    assert git.enabled
+    assert (vault / "note.md").read_text() == "hello"
+
+
+@pytest.mark.asyncio
+async def test_provision_clones_into_empty_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    git = await _provision(vault, _bare(tmp_path / "r.git", populated=True))
+    assert git.enabled
+    assert (vault / "notes.md").read_text() == "existing"
+
+
+@pytest.mark.asyncio
+async def test_provision_refuses_to_merge_unrelated_histories(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "mine.md").write_text("local work")
+    git = await _provision(vault, _bare(tmp_path / "r.git", populated=True))
+    assert not git.enabled
+    assert "Refusing to guess" in (git.disabled_reason or "")
+    # the user's file is untouched and nothing was initialized
+    assert (vault / "mine.md").read_text() == "local work"
+    assert not (vault / ".git").exists()
+
+
+@pytest.mark.asyncio
+async def test_provision_reports_unreachable_remote(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    git = await _provision(vault, tmp_path / "does-not-exist.git")
+    assert not git.enabled
+    assert "cannot reach" in (git.disabled_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_provision_corrects_a_stale_remote_url(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _sh("git", "init", "-q", "-b", "main", str(vault))
+    _sh("git", "-C", str(vault), "remote", "add", "origin", "https://wrong.example/x.git")
+    remote = _bare(tmp_path / "r.git")
+    git = await _provision(vault, remote)
+    assert git.enabled
+    import subprocess
+
+    url = subprocess.run(
+        ["git", "-C", str(vault), "remote", "get-url", "origin"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert url == str(remote)

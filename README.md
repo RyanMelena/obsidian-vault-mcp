@@ -1,7 +1,7 @@
 # obsidian-vault-mcp
 
-[![ci](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/ci.yml)
-[![docker](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/docker.yml/badge.svg)](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/docker.yml)
+[![ci](https://github.com/ryanmelena/mcp-obsidian-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanmelena/mcp-obsidian-vault/actions/workflows/ci.yml)
+[![docker](https://github.com/ryanmelena/mcp-obsidian-vault/actions/workflows/docker.yml/badge.svg)](https://github.com/ryanmelena/mcp-obsidian-vault/actions/workflows/docker.yml)
 
 One MCP server for an Obsidian vault: **search, read, and write**, plus a Gitea
 webhook receiver that keeps the server-side working tree current.
@@ -65,8 +65,134 @@ Every note gets `id` (ULID), `title`, `created`, and `status: active`. Once
 they're there, superseding a note is `update_note(path, frontmatter={"status": "superseded", "superseded_by": "<id>"})`
 and every agent query becomes `--frontmatter -status:superseded`.
 
+## Error handling
+
+Expected failures — a bad path, a missing note, an unreachable search backend,
+a vault the container cannot write to — are raised as `ToolError`, so the
+message reaches the agent verbatim instead of the SDK's generic
+"Error executing tool <name>". Anything unexpected still logs a full traceback
+in the container; `docker logs` is the place to look when a message is generic.
+
+When provisioning cannot produce a usable repo, git is disabled with the reason
+recorded rather than left to explode on the first write. `vault_status` reports
+`git_problem` and every `save_note` returns it alongside the saved path. Search
+and write keep working.
+
+Git failures are reported, not raised. By the time a commit runs, the note is
+already on disk, so raising would make an agent retry and write a duplicate on
+every attempt. `save_note` returns the path plus
+`"git": {"status": "error", "error": "..."}` and the next successful sync picks
+the note up.
 
 `pytest tests/` covers all of the above.
+
+## Setup
+
+### 1. Vault dataset
+
+```sh
+zfs create perfpool/obsidian
+zfs set atime=off perfpool/obsidian
+mkdir /mnt/perfpool/obsidian/vault
+```
+
+That's all. Create an empty repo in Gitea, set `GIT_REMOTE_URL`, and the
+server provisions the rest at startup — `git init`, the `.gitignore`, the
+remote, the initial commit, and the first push. Set `GIT_AUTO_INIT=false` to
+manage the repo yourself.
+
+What it does depends on what it finds, and only unambiguous cases are
+automatic:
+
+| Vault | Remote | Action |
+| --- | --- | --- |
+| empty or unversioned | empty | `git init`, write `.gitignore`, commit, push |
+| empty | has history | clone |
+| has files, no `.git` | has history | **stop** and report |
+| already a repo | any | fix the remote URL, check out the branch |
+
+The third row is a merge decision, not a provisioning step — reaching for
+`--allow-unrelated-histories` on someone's knowledge base is not a choice a
+daemon should make at startup. It leaves your files untouched and tells you to
+clone elsewhere and merge by hand, or empty the vault so it can clone.
+
+The generated `.gitignore` matters more than it looks. OHS writes its SQLite
+index to `.obsidian-hybrid-search.db` **inside the vault root**; committing it
+means three machines writing a multi-hundred-megabyte binary to the same path.
+
+### 2. Remote authentication
+
+**HTTP(S) with a token (recommended; no SSH needed).** In Gitea: **Settings →
+Applications → Generate New Token**, scope `write:repository`. Then set
+`GIT_REMOTE_URL` and either `GIT_TOKEN` or `GIT_TOKEN_FILE`.
+
+Gitea accepts an access token as the HTTP password with any username. The
+entrypoint writes it to a `0600` credential file under `/state` and configures
+`credential.helper=store`, so the token stays out of `.git/config`, out of
+`git remote -v`, and out of the process list — unlike the common
+`https://user:token@host/repo.git` shortcut, which leaks it into all three.
+`credential.useHttpPath=false` means one entry covers every repo on that host.
+
+`GIT_TERMINAL_PROMPT=0` is set, so a bad or missing token fails immediately
+instead of hanging on a password prompt.
+
+If Gitea sits behind an internal CA rather than a public cert, mount the CA
+bundle and set `GIT_SSL_CAINFO`. Don't reach for `GIT_SSL_NO_VERIFY`.
+
+**SSH (alternative).** Generate a keypair, add the public half as a write
+deploy key, and mount the private half at `/home/app/.ssh` with a `known_hosts`
+entry. The key must be owned by the UID you run as, mode `0600`.
+
+### 3. Build note
+
+`onnxruntime-node`'s postinstall downloads CUDA binaries from `api.nuget.org`.
+If your build host has restricted egress, the image build fails there. The
+Dockerfile passes `--onnxruntime-node-install=skip`; nothing is lost, because
+OHS never uses the CUDA execution provider (see below).
+
+Also worth knowing: OHS degrades rather than dies when the embedding endpoint is
+unreachable — it logs a warning, disables semantic search and indexing, and
+keeps serving fulltext and title search. An Ollama outage costs you recall, not
+availability.
+
+### 4. Run
+
+```sh
+cp .env.example .env
+openssl rand -hex 32   # -> GITEA_WEBHOOK_SECRET
+docker compose -f docker-compose.example.yml up -d --build
+curl -s http://obsidian-vault:3940/healthz
+```
+
+### 5. Gitea webhook
+
+Repo → Settings → Webhooks → Gitea:
+
+- **Target URL**: `https://obsidian-vault.internal.example.com/hooks/gitea`
+- **HTTP Method**: POST, **Content Type**: `application/json`
+- **Secret**: the value of `GITEA_WEBHOOK_SECRET`
+- **Trigger**: Push events only
+
+Gitea's delivery log is your debugging surface — it shows the request, response
+body, and status. A 202 means the pull was queued; 401 means the secret doesn't
+match; 200 with `skipped` means the push was to another branch or was this
+service's own push coming back around.
+
+`scripts/gitea-post-receive.sh` is a fallback if the Gitea container can't reach
+the service over HTTP. Prefer the webhook.
+
+### 6. Open WebUI
+
+Register one server:
+
+- `https://obsidian-vault.internal.example.com/mcp`
+
+It speaks MCP Streamable HTTP natively, so `mcpo` is pure overhead here.
+
+### 7. Desktops
+
+Obsidian Git plugin, pointed at the same Gitea repo. Set auto-commit and
+auto-pull to 2–5 minutes. Nothing else to install per client.
 
 ## Reranking is CPU-only
 

@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -41,6 +42,28 @@ log = logging.getLogger("obsidian-vault-mcp")
 _background: set[asyncio.Task[None]] = set()
 
 
+@contextlib.contextmanager
+def _actionable(what: str) -> Any:
+    """Turn expected failures into ToolError so the message reaches the caller.
+
+    Anything else raised from a tool becomes the SDK's generic "Error executing
+    tool <name>", which tells the agent — and you — nothing. These are the
+    failures we can name, so we name them.
+    """
+    try:
+        yield
+    except (NoteError, BackendError) as exc:
+        raise ToolError(str(exc)) from exc
+    except PermissionError as exc:
+        raise ToolError(
+            f"{what}: permission denied ({exc.filename}). The vault is not writable "
+            "by the uid this container runs as; check the `user:` setting against "
+            "the dataset owner."
+        ) from exc
+    except OSError as exc:
+        raise ToolError(f"{what}: {exc.strerror or exc} ({exc.filename})") from exc
+
+
 def build_server(cfg: Config) -> MCPServer:
     git = VaultGit(
         cfg.vault_path,
@@ -50,6 +73,8 @@ def build_server(cfg: Config) -> MCPServer:
         author_email=cfg.git_author_email,
         auto_push=cfg.auto_push,
         enabled=cfg.git_enabled,
+        remote_url=cfg.git_remote_url,
+        auto_init=cfg.git_auto_init,
     )
 
     backend: SearchBackend
@@ -67,6 +92,7 @@ def build_server(cfg: Config) -> MCPServer:
 
     @contextlib.asynccontextmanager
     async def lifespan(_: MCPServer) -> AsyncIterator[None]:
+        await git.provision()
         await backend.start()
         try:
             yield
@@ -83,6 +109,25 @@ def build_server(cfg: Config) -> MCPServer:
             "AI inbox. Always cite the vault-relative path of any note you use."
         ),
     )
+
+    async def _guard(awaitable: Any) -> Any:
+        try:
+            return await awaitable
+        except BackendError as exc:
+            raise ToolError(str(exc)) from exc
+
+    async def _record(paths: list[str], message: str) -> dict[str, Any]:
+        """Commit and push, but never fail the tool over it.
+
+        The note is already on disk at this point. Raising here would make an
+        agent retry and write a duplicate note on every attempt, so a git
+        failure is reported alongside the successful save instead.
+        """
+        try:
+            return await git.record(paths, message)
+        except GitError as exc:
+            log.error("git record failed for %s: %s", paths, exc)
+            return {"status": "error", "error": str(exc)}
 
     async def reindex(rel_path: str = "") -> None:
         if cfg.ohs_enabled and cfg.reindex_cmd == "":
@@ -132,14 +177,14 @@ def build_server(cfg: Config) -> MCPServer:
             extra=frontmatter,
             reserved=cfg.reserved_frontmatter,
         )
-        cfg.inbox_root.mkdir(parents=True, exist_ok=True)
-        dest = unique_path(cfg.inbox_root, slugify(title), note_id)
-        rel = dest.relative_to(cfg.vault_path).as_posix()
+        with _actionable("save_note"):
+            cfg.inbox_root.mkdir(parents=True, exist_ok=True)
+            dest = unique_path(cfg.inbox_root, slugify(title), note_id)
+            rel = dest.relative_to(cfg.vault_path).as_posix()
+            atomic_write(dest, content, cfg.tmp_root)
 
-        atomic_write(dest, content, cfg.tmp_root)
         await reindex(rel)
-        result = await git.record([rel], f"note: {title[:72]}")
-        return {"path": rel, "id": note_id, "git": result}
+        return {"path": rel, "id": note_id, "git": await _record([rel], f"note: {title[:72]}")}
 
     @mcp.tool()
     async def update_note(
@@ -153,26 +198,28 @@ def build_server(cfg: Config) -> MCPServer:
         `frontmatter` to merge keys into the existing frontmatter (a null value
         removes a key). Notes outside the inbox are not writable.
         """
-        target = resolve_within(cfg.inbox_root, path.split(f"{cfg.inbox_dir}/", 1)[-1])
-        if not target.is_file():
-            raise NoteError(f"no such note: {path}")
+        with _actionable("update_note"):
+            target = resolve_within(cfg.inbox_root, path.split(f"{cfg.inbox_dir}/", 1)[-1])
+            if not target.is_file():
+                raise NoteError(f"no such note: {path}")
 
-        existing = target.read_text(encoding="utf-8")
-        meta, current_body = split_frontmatter(existing)
-        for key, value in (frontmatter or {}).items():
-            if key in {"id", "created"}:
-                raise NoteError(f"frontmatter key {key!r} is immutable")
-            if value is None:
-                meta.pop(key, None)
-            else:
-                meta[key] = value
-        meta["updated"] = utcnow()
+            meta, current_body = split_frontmatter(target.read_text(encoding="utf-8"))
+            for key, value in (frontmatter or {}).items():
+                if key in {"id", "created"}:
+                    raise NoteError(f"frontmatter key {key!r} is immutable")
+                if value is None:
+                    meta.pop(key, None)
+                else:
+                    meta[key] = value
+            meta["updated"] = utcnow()
 
         rel = target.relative_to(cfg.vault_path).as_posix()
-        atomic_write(target, render(meta, body if body is not None else current_body), cfg.tmp_root)
+        with _actionable("update_note"):
+            atomic_write(
+                target, render(meta, body if body is not None else current_body), cfg.tmp_root
+            )
         await reindex(rel)
-        result = await git.record([rel], f"update: {rel}")
-        return {"path": rel, "git": result}
+        return {"path": rel, "git": await _record([rel], f"update: {rel}")}
 
     @mcp.tool()
     async def sync_vault() -> dict[str, Any]:
@@ -193,7 +240,10 @@ def build_server(cfg: Config) -> MCPServer:
             "inbox_notes": len(inbox),
             "git_enabled": cfg.git_enabled,
         }
-        if cfg.git_enabled:
+        if git.disabled_reason:
+            status["git_enabled"] = False
+            status["git_problem"] = git.disabled_reason
+        if git.enabled:
             status["branch"] = cfg.git_branch
             try:
                 status["head"] = await git.head()
@@ -226,7 +276,7 @@ def build_server(cfg: Config) -> MCPServer:
         exclude. Set `rerank=true` for higher precision at 1-3s extra latency.
         Always cite the returned paths.
         """
-        return await backend.search(
+        return await _guard(backend.search(
             query=query,
             queries=queries,
             mode=mode,
@@ -238,7 +288,7 @@ def build_server(cfg: Config) -> MCPServer:
             threshold=threshold,
             rerank=rerank or None,
             snippet_length=snippet_length,
-        )
+        ))
 
     @mcp.tool()
     async def read_notes(paths: list[str], snippet_length: int | None = None) -> dict[str, Any]:
@@ -248,7 +298,7 @@ def build_server(cfg: Config) -> MCPServer:
         miss you get fuzzy suggestions rather than an error. Use `snippet_length`
         to cap the content returned per note.
         """
-        return await backend.read(paths, snippet_length)
+        return await _guard(backend.read(paths, snippet_length))
 
     # ---- webhook --------------------------------------------------------
 
