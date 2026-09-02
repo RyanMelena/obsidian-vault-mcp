@@ -83,7 +83,7 @@ jobs:
           mkdir -p /tmp/vault /tmp/state
           # Deliberately a UID that does not exist in the image, to prove the
           # nss_wrapper path in docker-entrypoint.sh works.
-          chown -R 4242:4242 /tmp/vault /tmp/state
+          chmod 0777 /tmp/vault /tmp/state
           docker run -d --name smoke -p 3940:3940 \
             --user 4242:4242 \
             -e VAULT_PATH=/vault \

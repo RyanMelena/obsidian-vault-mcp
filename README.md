@@ -1,7 +1,7 @@
 # obsidian-vault-mcp
 
-[![ci](https://github.com/YOUR_GH_USER/obsidian-vault-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_GH_USER/obsidian-vault-mcp/actions/workflows/ci.yml)
-[![docker](https://github.com/YOUR_GH_USER/obsidian-vault-mcp/actions/workflows/docker.yml/badge.svg)](https://github.com/YOUR_GH_USER/obsidian-vault-mcp/actions/workflows/docker.yml)
+[![ci](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/ci.yml)
+[![docker](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/docker.yml/badge.svg)](https://github.com/RyanMelena/obsidian-vault-mcp/actions/workflows/docker.yml)
 
 One MCP server for an Obsidian vault: **search, read, and write**, plus a Gitea
 webhook receiver that keeps the server-side working tree current.
