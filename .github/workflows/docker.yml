@@ -57,7 +57,7 @@ jobs:
             org.opencontainers.image.description=MCP search, read, and write server for an Obsidian vault
 
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           # linux/amd64 only. arm64 would have to cross-build better-sqlite3,
