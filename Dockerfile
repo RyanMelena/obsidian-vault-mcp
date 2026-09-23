@@ -4,7 +4,7 @@
 # Runs as uid 3000 by default, but works under any `user: <uid>:<gid>` in
 # compose — see docker-entrypoint.sh and "Running as an arbitrary UID" in
 # the README.
-FROM node:22-slim
+FROM node:25-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
